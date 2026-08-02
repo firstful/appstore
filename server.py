@@ -96,7 +96,7 @@ async def publish(store_dir: str, file: str,
     with target.open("wb") as fh:
         shutil.copyfileobj(payload.file, fh)
     m.update({
-        "apk": f"{store_dir}/{file}",
+        "apk": f"apk/{store_dir}/{file}",
         "size": target.stat().st_size,
         "built": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     })
