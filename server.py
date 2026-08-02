@@ -68,10 +68,11 @@ def index():
             built_d = datetime.fromisoformat(built).strftime("%Y-%m-%d %H:%M UTC")
         except Exception:
             built_d = built or "?"
-        # human name: last package segment, title-cased (e.g. com.x.talaria -> Talaria)
-        name = pkg.rsplit(".", 1)[-1].title() if "." in pkg else pkg
+        # human name: prefer manifest name, else last package segment
+        # (e.g. com.x.talaria -> Talaria)
+        name = m.get("name") or (pkg.rsplit(".", 1)[-1].title() if "." in pkg else pkg)
         if exists:
-            btn = (f'<a class="btn" href="/apk/{html.escape(apk_rel, quote=True)}" '
+            btn = (f'<a class="btn" href="/{html.escape(apk_rel, quote=True)}" '
                    f'download>Install APK</a>')
         else:
             btn = '<span class="btn off">APK missing</span>'
