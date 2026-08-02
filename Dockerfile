@@ -1,6 +1,6 @@
 FROM docker.io/python:3.12-slim
 WORKDIR /app
-RUN pip install --no-cache-dir fastapi "uvicorn[standard]"
+RUN pip install --no-cache-dir fastapi "uvicorn[standard]" python-multipart
 COPY server.py .
 ENV STORE_DATA=/data
 EXPOSE 8080
