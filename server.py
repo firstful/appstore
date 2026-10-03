@@ -111,42 +111,50 @@ def catalog() -> list[dict]:
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    """Basic install page: render the catalog with APK download buttons."""
-    entries = catalog()
-    cards = []
-    for m in entries:
-        pkg = m.get("app", "?")
-        apk_rel = m.get("apk", "")
-        ver = m.get("version", "?")
-        size = m.get("size", 0)
-        built = m.get("built", "")
-        exists = m.get("exists", False)
-        try:
-            size_mb = f"{size / 1048576:.1f} MB"
-        except Exception:
-            size_mb = "?"
-        try:
-            built_d = datetime.fromisoformat(built).strftime("%Y-%m-%d %H:%M UTC")
-        except Exception:
-            built_d = built or "?"
-        # human name: prefer manifest name, else last package segment
-        # (e.g. com.x.talaria -> Talaria)
-        name = m.get("name") or (pkg.rsplit(".", 1)[-1].title() if "." in pkg else pkg)
-        if exists:
-            btn = (f'<a class="btn" href="/{html.escape(apk_rel, quote=True)}" '
-                   f'download>Install APK</a>')
-        else:
-            btn = '<span class="btn off">APK missing</span>'
-        cards.append(f"""<div class="card">
-  <div class="card-top"><span class="name">{html.escape(name)}</span>
-  <span class="ver">v{html.escape(str(ver))}</span></div>
-  <div class="meta"><code>{html.escape(pkg)}</code></div>
-  <div class="meta">{size_mb} &middot; {html.escape(built_d)}</div>
-  <div class="actions">{btn}
-  <a class="link" href="/version/{html.escape(pkg)}.json">manifest</a></div>
-</div>""")
-    body = "\n".join(cards) if cards else (
-        '<p class="empty">Store is empty &mdash; nothing published yet.</p>')
+    """Single-purpose landing page: get the Sutliff Apps client APK.
+
+    This page used to render the whole catalog as a list of install buttons,
+    which competed with the app it was advertising — the phone has a real
+    store client that talks to /apps.json, and that client is what decides
+    install-vs-update per app. A second, static list here can only ever be a
+    stale copy of the catalog, so it was the wrong place to surface apps.
+
+    What belongs here is exactly one thing: the download for the store client
+    itself. Everything else stays reachable via /apps.json and /apk/..., which
+    are the machine-facing endpoints and are unchanged.
+    """
+    store_dir = os.environ.get("APPSTORE_SELF_DIR", "SutliffApps")
+    self_pkg = os.environ.get("APPSTORE_SELF_PKG", "com.reedsutliff.sutliffapps")
+    m = {}
+    try:
+        m = json.loads(manifest_path(self_pkg).read_text())
+    except Exception:
+        pass
+
+    apk_rel = m.get("apk", "")
+    ver = m.get("version", "?")
+    size = m.get("size", 0)
+    exists = bool(apk_rel) and (DATA / apk_rel).exists()
+    try:
+        built_d = datetime.fromisoformat(m.get("built", "")).strftime("%d %b %Y")
+    except Exception:
+        built_d = ""
+    try:
+        size_mb = f"{size / 1048576:.1f} MB"
+    except Exception:
+        size_mb = "?"
+
+    name = m.get("name") or "Sutliff Apps"
+    if exists:
+        btn = (f'<a class="btn" href="/{html.escape(apk_rel, quote=True)}" '
+               f'download>Download APK</a>')
+        meta = f"{size_mb} · v{html.escape(str(ver))}"
+        if built_d:
+            meta += f" · {built_d}"
+    else:
+        btn = '<span class="btn off">Not published yet</span>'
+        meta = "The store client has not been published to this catalog."
+
     return f"""<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
@@ -154,29 +162,41 @@ def index():
 <title>Sutliff Apps</title>
 <style>
   :root {{ color-scheme: light dark; }}
-  body {{ font-family: system-ui, -apple-system, sans-serif; max-width: 640px;
-         margin: 0 auto; padding: 24px 16px; }}
-  h1 {{ font-size: 1.4rem; margin: 8px 0 4px; }}
-  p.sub {{ opacity: .7; margin: 0 0 20px; font-size: .9rem; }}
-  .card {{ border: 1px solid #8884; border-radius: 12px; padding: 14px 16px;
-          margin-bottom: 12px; }}
-  .card-top {{ display: flex; justify-content: space-between; align-items: baseline; }}
-  .name {{ font-weight: 600; font-size: 1.05rem; }}
-  .ver {{ opacity: .65; font-size: .85rem; }}
-  .meta {{ opacity: .6; font-size: .85rem; margin-top: 2px; }}
-  code {{ font-size: .8rem; }}
-  .actions {{ margin-top: 10px; display: flex; align-items: center; gap: 14px; }}
-  .btn {{ background: #2f81f7; color: #fff; text-decoration: none; padding: 8px 18px;
-         border-radius: 8px; font-weight: 600; font-size: .92rem; }}
+  body {{ font-family: system-ui, -apple-system, sans-serif; max-width: 480px;
+         margin: 0 auto; padding: 32px 16px; text-align: center; }}
+  .icon {{ width: 96px; height: 96px; border-radius: 22px; margin: 0 auto 16px;
+           background: #1c222a; display: flex; align-items: center;
+           justify-content: center; }}
+  .icon svg {{ width: 56px; height: 56px; }}
+  h1 {{ font-size: 1.5rem; margin: 0 0 4px; }}
+  p.sub {{ opacity: .7; margin: 0 0 24px; font-size: .92rem; line-height: 1.5; }}
+  .card {{ border: 1px solid #8884; border-radius: 14px; padding: 18px 16px; }}
+  .meta {{ opacity: .6; font-size: .85rem; margin-bottom: 14px; }}
+  .btn {{ background: #4caf50; color: #fff; text-decoration: none; padding: 12px 26px;
+         border-radius: 10px; font-weight: 600; font-size: .98rem;
+         display: inline-block; }}
   .btn.off {{ background: #8886; cursor: not-allowed; }}
-  .link {{ font-size: .85rem; opacity: .7; }}
-  .empty {{ opacity: .6; }}
+  p.foot {{ opacity: .5; font-size: .8rem; margin-top: 28px; }}
+  code {{ font-size: .78rem; }}
 </style></head>
 <body>
-<h1>Sutliff Apps</h1>
-<p class="sub">Family app store &mdash; install APKs straight to your phone.
-Raw catalog: <a href="/apps.json">/apps.json</a></p>
-{body}
+  <div class="icon">
+    <svg viewBox="0 0 96 96" fill="none" aria-hidden="true">
+      <path d="M30 24 L48 46 L66 24" stroke="#4caf50" stroke-width="7"
+            stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M26 58 V70 H70 V58" stroke="#4caf50" stroke-width="7"
+            stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </div>
+  <h1>{html.escape(name)}</h1>
+  <p class="sub">The store client for this household. It reads the live catalog and
+  installs or updates your apps &mdash; including Talaria.</p>
+  <div class="card">
+    <div class="meta">{meta}</div>
+    {btn}
+  </div>
+  <p class="foot">Other endpoints: <a href="/apps.json">catalog</a> ·
+  <a href="/health">health</a></p>
 </body></html>"""
 
 
