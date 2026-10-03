@@ -11,11 +11,15 @@ Endpoints:
                                   auth: X-Publish-Token == APPSTORE_PUBLISH_TOKEN)
 Storage: /data (mounted PVC; NFS bulk — APKs are re-creatable artifacts).
 """
+import hashlib
 import html
 import json
 import os
+import re
 import secrets
 import shutil
+import subprocess
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,6 +37,51 @@ def manifest_path(pkg: str) -> Path:
     return DATA / "version" / f"{pkg}.json"
 
 
+def apk_facts(path: Path) -> dict:
+    """sha256 of the stored APK. Always computed here, never trusted from CI.
+
+    Cheap, exact, and it gives the client a second independent signal: if the
+    hash is unchanged the bytes are identical, so there is nothing to install
+    even when the metadata is ambiguous.
+    """
+    try:
+        return {"sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+    except OSError:
+        return {}
+
+
+def apk_version_code(path: Path) -> int | None:
+    """versionCode from the APK, when this container can read one.
+
+    Returns None in normal operation: the appstore image deliberately has no
+    Android SDK (it is a small python image, not a build image), so aapt2 is
+    never present. The value that ships in the catalog comes from CI, which
+    does have aapt2 and reads it from the artifact it just built.
+
+    This remains as a best-effort enrichment for anyone running the store
+    locally on a machine that happens to have the SDK. It is never the
+    authority — see publish(), which prefers the APK but accepts CI's value.
+    """
+    sdk = os.environ.get("ANDROID_HOME", "")
+    try:
+        for cand in sorted(Path(sdk).glob("build-tools/*/aapt2"), reverse=True):
+            if not cand.exists():
+                continue
+            try:
+                badging = subprocess.run(
+                    [str(cand), "dump", "badging", str(path)],
+                    capture_output=True, text=True, timeout=120, check=True,
+                ).stdout
+            except Exception:
+                continue
+            m = re.search(r"versionCode='(\d+)'", badging)
+            if m:
+                return int(m.group(1))
+    except OSError:
+        pass
+    return None
+
+
 def catalog() -> list[dict]:
     out = []
     vdir = DATA / "version"
@@ -42,6 +91,18 @@ def catalog() -> list[dict]:
                 m = json.loads(mf.read_text())
                 apk_path = DATA / m["apk"]
                 m["exists"] = apk_path.exists()
+                # Backfill on read: apps published before this change have no
+                # versionCode/sha256 in their manifest, and every one of them
+                # would otherwise show a permanently greyed-out button.
+                # sha256 is computed from the stored bytes here; versionCode
+                # can only be recovered with an SDK, so for already-published
+                # apps it stays absent until their next CI publish.
+                if m["exists"] and not m.get("sha256"):
+                    m.update(apk_facts(apk_path))
+                if m["exists"] and not m.get("versionCode"):
+                    vc = apk_version_code(apk_path)
+                    if vc is not None:
+                        m["versionCode"] = vc
                 out.append(m)
             except Exception:
                 continue
@@ -173,7 +234,28 @@ async def publish(store_dir: str, file: str,
         "size": target.stat().st_size,
         "built": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     })
+    # sha256 is always computed here — it is cheap and exact.
+    m.update(apk_facts(target))
+    # versionCode: prefer reading the APK, but the appstore image has no
+    # Android SDK, so that usually yields nothing. CI sends the real value
+    # (it has aapt2); accept it. Order matters: if both are available and
+    # disagree, the APK wins and we log it.
+    vc = apk_version_code(target)
+    if vc is None:
+        sent = m.get("versionCode")
+        vc = int(sent) if sent is not None else None
+    elif m.get("versionCode") is not None and int(m["versionCode"]) != vc:
+        print(f"warn: {pkg} manifest versionCode {m['versionCode']} != APK {vc}; using APK")
+    if vc is not None:
+        m["versionCode"] = vc
     vdir = DATA / "version"
     vdir.mkdir(exist_ok=True)
     (vdir / f"{pkg}.json").write_text(json.dumps(m, indent=2))
-    return {"ok": True, "package": pkg, "apk": m["apk"], "size": m["size"]}
+    return {
+        "ok": True,
+        "package": pkg,
+        "apk": m["apk"],
+        "size": m["size"],
+        "versionCode": m.get("versionCode"),
+        "sha256": m.get("sha256"),
+    }
