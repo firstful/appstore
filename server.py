@@ -18,13 +18,13 @@ import os
 import re
 import secrets
 import shutil
-import subprocess
-import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+
+from axml import version_code_from_apk
 
 DATA = Path(os.environ.get("STORE_DATA", "/data"))
 DATA.mkdir(parents=True, exist_ok=True)
@@ -51,35 +51,25 @@ def apk_facts(path: Path) -> dict:
 
 
 def apk_version_code(path: Path) -> int | None:
-    """versionCode from the APK, when this container can read one.
+    """versionCode read directly from the APK's binary AndroidManifest.
 
-    Returns None in normal operation: the appstore image deliberately has no
-    Android SDK (it is a small python image, not a build image), so aapt2 is
-    never present. The value that ships in the catalog comes from CI, which
-    does have aapt2 and reads it from the artifact it just built.
+    The store is the authority for this value. It was previously taken only
+    from CI's `versionCode` field, which meant the catalog's update signal was
+    only as good as each app repo remembering to send it — and three of the
+    four did not. An entry with no versionCode carries no ordering information,
+    so the client could not tell "up to date" from "an update exists" and
+    reported "Up to date" forever.
 
-    This remains as a best-effort enrichment for anyone running the store
-    locally on a machine that happens to have the SDK. It is never the
-    authority — see publish(), which prefers the APK but accepts CI's value.
+    Reading the APK makes the dependency disappear: already-published apps
+    backfill immediately with no rebuild, and CI's value becomes a cross-check
+    rather than the source. See axml.py for the format.
     """
-    sdk = os.environ.get("ANDROID_HOME", "")
     try:
-        for cand in sorted(Path(sdk).glob("build-tools/*/aapt2"), reverse=True):
-            if not cand.exists():
-                continue
-            try:
-                badging = subprocess.run(
-                    [str(cand), "dump", "badging", str(path)],
-                    capture_output=True, text=True, timeout=120, check=True,
-                ).stdout
-            except Exception:
-                continue
-            m = re.search(r"versionCode='(\d+)'", badging)
-            if m:
-                return int(m.group(1))
-    except OSError:
-        pass
-    return None
+        return version_code_from_apk(str(path))
+    except Exception:
+        # Never let enrichment break the catalog — an unparseable APK simply
+        # has no versionCode, which is the pre-existing behaviour.
+        return None
 
 
 def catalog() -> list[dict]:
@@ -92,17 +82,21 @@ def catalog() -> list[dict]:
                 apk_path = DATA / m["apk"]
                 m["exists"] = apk_path.exists()
                 # Backfill on read: apps published before this change have no
-                # versionCode/sha256 in their manifest, and every one of them
-                # would otherwise show a permanently greyed-out button.
-                # sha256 is computed from the stored bytes here; versionCode
-                # can only be recovered with an SDK, so for already-published
-                # apps it stays absent until their next CI publish.
-                if m["exists"] and not m.get("sha256"):
-                    m.update(apk_facts(apk_path))
-                if m["exists"] and not m.get("versionCode"):
+                # versionCode/sha256 in their manifest. Both are derived from
+                # the stored bytes, so they can be recovered exactly — no
+                # rebuild required — and written back so the cost is paid once.
+                if m["exists"] and (not m.get("sha256") or not m.get("versionCode")):
+                    facts = apk_facts(apk_path)
                     vc = apk_version_code(apk_path)
-                    if vc is not None:
+                    if facts.get("sha256") and not m.get("sha256"):
+                        m["sha256"] = facts["sha256"]
+                    if vc is not None and not m.get("versionCode"):
                         m["versionCode"] = vc
+                    # Persist so we stop re-hashing megabytes on every request.
+                    try:
+                        mf.write_text(json.dumps(m, indent=2))
+                    except OSError:
+                        pass
                 out.append(m)
             except Exception:
                 continue
