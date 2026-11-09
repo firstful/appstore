@@ -33,6 +33,13 @@ TOKEN = os.environ.get("APPSTORE_PUBLISH_TOKEN", "")
 app = FastAPI(title="Sutliff Apps Store")
 
 
+NO_CACHE_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate",
+    "Expires": "0",
+    "Pragma": "no-cache",
+}
+
+
 def manifest_path(pkg: str) -> Path:
     return DATA / "version" / f"{pkg}.json"
 
@@ -149,7 +156,7 @@ def index():
         btn = '<span class="btn off">Not published yet</span>'
         meta = "The store client has not been published to this catalog."
 
-    return f"""<!doctype html>
+    return HTMLResponse(content=f"""<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -191,7 +198,7 @@ def index():
   </div>
   <p class="foot">Other endpoints: <a href="/apps.json">catalog</a> ·
   <a href="/health">health</a></p>
-</body></html>"""
+</body></html>""", headers=NO_CACHE_HEADERS)
 
 
 @app.get("/health")
@@ -201,7 +208,7 @@ def health():
 
 @app.get("/apps.json")
 def apps():
-    return JSONResponse(catalog())
+    return JSONResponse(catalog(), headers=NO_CACHE_HEADERS)
 
 
 @app.get("/version/{pkg}.json")
@@ -209,7 +216,7 @@ def version(pkg: str):
     p = manifest_path(pkg)
     if not p.exists():
         raise HTTPException(404, "no such app")
-    return JSONResponse(json.loads(p.read_text()))
+    return JSONResponse(json.loads(p.read_text()), headers=NO_CACHE_HEADERS)
 
 
 @app.get("/apk/{store_dir}/{file}")
